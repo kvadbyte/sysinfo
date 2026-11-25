@@ -2,12 +2,31 @@
  * sysinfo.c - one-shot Linux system report built from /proc files.
  * Only <stdio.h> is used; all string helpers are hand-written.
  *
+ * Options:
+ *   --version    print the program version and exit
+ *   --no-color   disable ANSI colors (useful when piping to a file)
+ *   --help       show usage
+ *
  * Build: gcc -std=c99 -Wall -Wextra -pedantic -o sysinfo sysinfo.c
  */
 #include <stdio.h>
 
-#define LINE_SIZE 512   /* size of every line buffer */
-#define BAR_WIDTH 20    /* characters inside the [....] memory bar */
+#define VERSION_STRING "1"   /* reported by --version */
+#define LINE_SIZE 512        /* size of every line buffer */
+#define BAR_WIDTH 20         /* characters inside the [....] memory bar */
+
+/* ANSI escape sequences. "\033" is the ESC character. */
+#define C_RESET   "\033[0m"
+#define C_DIM     "\033[2m"
+#define C_RED     "\033[1;31m"
+#define C_GREEN   "\033[1;32m"
+#define C_YELLOW  "\033[1;33m"
+#define C_BLUE    "\033[1;34m"
+#define C_MAGENTA "\033[1;35m"
+#define C_CYAN    "\033[1;36m"
+
+/* 1 = emit colors, 0 = plain text. Changed by --no-color. */
+static int use_color = 1;
 
 /* ---------- small string helpers (no <string.h>) ---------- */
 
@@ -34,6 +53,17 @@ static int starts_with(const char *s, const char *prefix)
     return 1;
 }
 
+/* Return 1 if the two strings are identical, otherwise 0.
+ * Used to recognise command-line options. */
+static int str_equal(const char *a, const char *b)
+{
+    while (*a != '\0' && *a == *b) {
+        a++;
+        b++;
+    }
+    return *a == *b;
+}
+
 /* Return a pointer to the text after the first ':' (and any spaces/tabs).
  * Used for lines like "model name\t: Intel(R) Core(TM) ...". */
 static const char *after_colon(const char *s)
@@ -48,6 +78,34 @@ static const char *after_colon(const char *s)
         s++;
     }
     return s;
+}
+
+/* ---------- color helpers ---------- */
+
+/* Return the escape sequence if colors are on, or an empty string if off.
+ * Lets every printf stay the same whether or not color is enabled. */
+static const char *clr(const char *code)
+{
+    return use_color ? code : "";
+}
+
+/* Pick a color for a usage percentage: green is fine, yellow is getting
+ * high, red is critical. */
+static const char *level_color(double pct)
+{
+    if (pct >= 85.0) {
+        return C_RED;
+    }
+    if (pct >= 60.0) {
+        return C_YELLOW;
+    }
+    return C_GREEN;
+}
+
+/* Print a colored, left-aligned row label such as "Kernel  : ". */
+static void print_label(const char *color, const char *name)
+{
+    printf("%s%-8s%s: ", clr(color), name, clr(C_RESET));
 }
 
 /* ---------- file helpers ---------- */
@@ -99,7 +157,8 @@ static void print_kernel(void)
         return;
     }
     if (read_line(fp, line, (int)sizeof line)) {
-        printf("Kernel  : %s\n", line);
+        print_label(C_MAGENTA, "Kernel");
+        printf("%s\n", line);
     } else {
         fprintf(stderr, "sysinfo: /proc/version is empty\n");
     }
@@ -131,8 +190,8 @@ static void print_uptime(void)
         total %= 3600L;
         mins  = total / 60L;
         secs  = total % 60L;
-        printf("Uptime  : %ld days, %02ld:%02ld:%02ld\n",
-               days, hours, mins, secs);
+        print_label(C_GREEN, "Uptime");
+        printf("%ld days, %02ld:%02ld:%02ld\n", days, hours, mins, secs);
     } else {
         fprintf(stderr, "sysinfo: could not parse /proc/uptime\n");
     }
@@ -152,7 +211,8 @@ static void print_load(void)
     }
     if (read_line(fp, line, (int)sizeof line) &&
         sscanf(line, "%lf %lf %lf", &l1, &l5, &l15) == 3) {
-        printf("Load    : %.2f %.2f %.2f\n", l1, l5, l15);
+        print_label(C_YELLOW, "Load");
+        printf("%.2f %.2f %.2f\n", l1, l5, l15);
     } else {
         fprintf(stderr, "sysinfo: could not parse /proc/loadavg\n");
     }
@@ -190,13 +250,15 @@ static void print_cpu(void)
     }
     fclose(fp);
 
-    printf("CPU     : %s (%d logical processors)\n", model, count);
+    print_label(C_CYAN, "CPU");
+    printf("%s (%d logical processors)\n", model, count);
 }
 
-/* Print a [####----] bar for a percentage (clamped to 0..100). */
+/* Print a [####----] bar for a percentage (clamped to 0..100).
+ * The filled part takes the usage-level color; the empty part is dimmed. */
 static void draw_bar(double pct)
 {
-    char bar[BAR_WIDTH + 1];
+    const char *level;
     int filled, i;
 
     if (pct < 0.0) {
@@ -205,12 +267,18 @@ static void draw_bar(double pct)
     if (pct > 100.0) {
         pct = 100.0;
     }
+    level = level_color(pct);
     filled = (int)(pct / 100.0 * BAR_WIDTH + 0.5);   /* round to nearest */
-    for (i = 0; i < BAR_WIDTH; i++) {
-        bar[i] = (i < filled) ? '#' : '-';
+
+    printf("          [%s", clr(level));
+    for (i = 0; i < filled; i++) {
+        putchar('#');
     }
-    bar[BAR_WIDTH] = '\0';
-    printf("          [%s] %.1f%%\n", bar, pct);
+    printf("%s", clr(C_DIM));
+    for (; i < BAR_WIDTH; i++) {
+        putchar('-');
+    }
+    printf("%s] %s%.1f%%%s\n", clr(C_RESET), clr(level), pct, clr(C_RESET));
 }
 
 /* Print memory and swap statistics from /proc/meminfo.
@@ -223,7 +291,7 @@ static void print_memory(void)
     unsigned long long swap_total = 0, swap_free = 0;
     unsigned long long used_kb, swap_used_kb;
     int have_mt = 0, have_ma = 0, have_st = 0, have_sf = 0;
-    double pct;
+    double pct, swap_pct;
     FILE *fp = fopen("/proc/meminfo", "r");
 
     if (fp == NULL) {
@@ -249,8 +317,10 @@ static void print_memory(void)
         pct = (mem_total > 0)
                   ? (double)used_kb * 100.0 / (double)mem_total
                   : 0.0;
-        printf("Memory  : %llu / %llu MiB used (%.1f%%)\n",
-               used_kb / 1024ULL, mem_total / 1024ULL, pct);
+        print_label(C_BLUE, "Memory");
+        printf("%llu / %llu MiB used (%s%.1f%%%s)\n",
+               used_kb / 1024ULL, mem_total / 1024ULL,
+               clr(level_color(pct)), pct, clr(C_RESET));
         draw_bar(pct);
         printf("          total %llu MiB, available %llu MiB\n",
                mem_total / 1024ULL, mem_avail / 1024ULL);
@@ -261,19 +331,56 @@ static void print_memory(void)
 
     if (have_st && have_sf) {
         swap_used_kb = (swap_total >= swap_free) ? swap_total - swap_free : 0;
-        printf("Swap    : %llu / %llu MiB used\n",
-               swap_used_kb / 1024ULL, swap_total / 1024ULL);
+        swap_pct = (swap_total > 0)
+                       ? (double)swap_used_kb * 100.0 / (double)swap_total
+                       : 0.0;
+        print_label(C_BLUE, "Swap");
+        printf("%s%llu%s / %llu MiB used\n",
+               clr(level_color(swap_pct)), swap_used_kb / 1024ULL,
+               clr(C_RESET), swap_total / 1024ULL);
     } else {
         fprintf(stderr,
                 "sysinfo: SwapTotal/SwapFree missing in /proc/meminfo\n");
     }
 }
 
+/* ---------- command line ---------- */
+
+/* Print usage text to the given stream. */
+static void print_usage(FILE *out)
+{
+    fprintf(out,
+            "Usage: sysinfo [--version] [--no-color] [--help]\n"
+            "  --version    print the program version and exit\n"
+            "  --no-color   disable ANSI colors\n"
+            "  --help       show this help\n");
+}
+
 /* ---------- main ---------- */
 
-int main(void)
+int main(int argc, char *argv[])
 {
-    printf("===== System Information =====\n");
+    int i;
+
+    /* Parse options; --version and --help print and exit immediately. */
+    for (i = 1; i < argc; i++) {
+        if (str_equal(argv[i], "--version")) {
+            printf("sysinfo version %s\n", VERSION_STRING);
+            return 0;
+        } else if (str_equal(argv[i], "--help")) {
+            print_usage(stdout);
+            return 0;
+        } else if (str_equal(argv[i], "--no-color")) {
+            use_color = 0;
+        } else {
+            fprintf(stderr, "sysinfo: unknown option '%s'\n", argv[i]);
+            print_usage(stderr);
+            return 1;
+        }
+    }
+
+    printf("%s===== System Information =====%s\n",
+           clr(C_CYAN), clr(C_RESET));
     print_kernel();
     print_uptime();
     print_load();

@@ -34,7 +34,21 @@ The code is intended to compile with no warnings under these flags.
 ./sysinfo
 ```
 
-No arguments or options are accepted. The program prints the report once and exits with status 0.
+The program prints the report once and exits with status 0. Output is colored with ANSI escape codes.
+
+| Option | Effect |
+|--------|--------|
+| `--version` | Print the program version (`sysinfo version 1`) and exit |
+| `--no-color` | Disable colors, e.g. when redirecting output to a file |
+| `--help` | Show usage and exit |
+
+An unknown option prints a message and the usage text to `stderr` and exits with status 1.
+
+### Colors
+
+Each row label has its own color. Memory and swap usage are colored by level: green below 60%, yellow from 60%, red from 85%. The filled part of the memory bar uses the same color.
+
+The program cannot detect whether its output is a terminal (that needs a header other than `<stdio.h>`), so use `--no-color` when piping or redirecting.
 
 ## Example output
 
@@ -58,7 +72,8 @@ Swap    : 0 / 2048 MiB used
 - **Safe input:** every line is read with `fgets` and an explicit buffer size. If a line is longer than the buffer (for example the very long `flags` line in `/proc/cpuinfo`), the rest of it is discarded so it is not mistaken for a new line.
 - **Safe output:** the program does not use `sprintf`. The only formatted output goes through `printf` and `fprintf`.
 - **Error handling:** every `fopen` result is checked. On failure a message is written to `stderr` and the program continues with the remaining sections. Every `sscanf` return value is checked, and every opened file is closed with `fclose`.
-- **Structure:** one function per report section (`print_kernel`, `print_uptime`, `print_load`, `print_cpu`, `print_memory`), with `main()` only calling them.
+- **Structure:** one function per report section (`print_kernel`, `print_uptime`, `print_load`, `print_cpu`, `print_memory`). `main()` parses the options and then calls them.
+- **Colors:** colors are `#define`d escape strings. A small `clr()` helper returns an empty string when `--no-color` is set, so the output code is identical in both modes.
 
 ## Limitations
 
